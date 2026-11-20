@@ -4,13 +4,15 @@ As in the released clustering script: z-score each checkpoint across tokens, cen
 token's trajectory, cosine distance, HDBSCAN with leaf cluster selection. Paper settings
 (Appendix Table 4): min_cluster_size 150, min_samples = kept tokens // 15.
 
+Each trajectory type from step 3 (first and second order) is clustered separately.
+
 Outputs in RUN_DIR/clusters/:
-  labels.npz  labels (tokens, K) int: cluster id within that vector, -1 = HDBSCAN outlier,
+  labels_{order}.npz  labels (tokens, K) int: cluster id within that vector, -1 = HDBSCAN outlier,
               -2 = not clustered (token or vector filtered out in step 3)
   info.json   settings and the number of clusters per vector
 
 Usage:
-  python cluster.py RUN_DIR [--min_cluster_size 150] [--min_samples 0] [--jobs 8]
+  python cluster.py RUN_DIR [--orders first second] [--min_cluster_size 150] [--min_samples 0] [--jobs 8]
 """
 
 import argparse
@@ -52,28 +54,32 @@ def main():
     ap.add_argument("--min_cluster_size", type=int, default=150)
     ap.add_argument("--min_samples", type=int, default=0, help="0 = kept tokens // 15 (paper)")
     ap.add_argument("--jobs", type=int, default=8, help="vectors clustered in parallel")
+    ap.add_argument("--orders", nargs="+", choices=["first", "second"], default=["first", "second"])
     a = ap.parse_args()
-
-    T = np.load(os.path.join(a.run_dir, "trajectories", "trajectories.npz"))
-    traj, keep, vector_kept = T["traj"], T["keep"], T["vector_kept"]
-    kept = np.flatnonzero(vector_kept)
-    print(f"clustering {len(kept)} kept vectors of {len(vector_kept)}", flush=True)
-    results = Parallel(n_jobs=a.jobs)(
-        delayed(cluster_vector)(traj[:, :, k], keep[:, k], a.min_cluster_size, a.min_samples) for k in kept
-    )
-    labels = np.full(keep.shape, -2)
-    min_samples = {}
-    for k, (lab, ms) in zip(kept, results, strict=True):
-        labels[:, k] = lab
-        min_samples[int(k)] = ms
 
     out = os.path.join(a.run_dir, "clusters")
     os.makedirs(out, exist_ok=True)
-    np.savez(os.path.join(out, "labels.npz"), labels=labels)
-    n_clusters = {int(k): int(len(set(labels[:, k]) - {-1, -2})) for k in kept}
+    info = {"args": vars(a)}
+    for order in a.orders:
+        T = np.load(os.path.join(a.run_dir, "trajectories", f"trajectories_{order}.npz"))
+        traj, keep, vector_kept = T["traj"], T["keep"], T["vector_kept"]
+        kept = np.flatnonzero(vector_kept)
+        print(f"{order} order: clustering {len(kept)} kept vectors of {len(vector_kept)}", flush=True)
+        results = Parallel(n_jobs=a.jobs)(
+            delayed(cluster_vector)(traj[:, :, k], keep[:, k], a.min_cluster_size, a.min_samples) for k in kept
+        )
+        labels = np.full(keep.shape, -2)
+        min_samples = {}
+        for k, (lab, ms) in zip(kept, results, strict=True):
+            labels[:, k] = lab
+            min_samples[int(k)] = ms
+        np.savez(os.path.join(out, f"labels_{order}.npz"), labels=labels)
+        n_clusters = {int(k): int(len(set(labels[:, k]) - {-1, -2})) for k in kept}
+        info[order] = {"min_samples": min_samples, "clusters_per_vector": n_clusters}
+        print(f"{order} order: {sum(n_clusters.values())} clusters over {len(kept)} vectors", flush=True)
+        del traj
     with open(os.path.join(out, "info.json"), "w") as f:
-        json.dump({"args": vars(a), "min_samples": min_samples, "clusters_per_vector": n_clusters}, f, indent=2)
-    print(f"done: {sum(n_clusters.values())} clusters over {len(kept)} vectors; {out}/labels.npz", flush=True)
+        json.dump(info, f, indent=2)
 
 
 if __name__ == "__main__":

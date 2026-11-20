@@ -7,11 +7,12 @@
      loss[x, t] = L(x; theta_t)
    Saved to projections.npz. If that file exists it is reused (--recompute to redo it).
 
-2. Trajectories (paper Eqs. 2-8), cumulated over checkpoints:
+2. Trajectories (paper Eqs. 2-8), cumulated over checkpoints, for each --orders (default both):
      first   L_k(x, t) = sum_{i<t} g[x, i, k] d[i+1, k]
      second  first order plus, for each interval i -> i+1,
              1/2 lam_k d[i+1, k]^2 (g[x, i+1, k] - g[x, i, k]) / (G[i+1, k] - G[i, k]),
-             with G[t, k] = sum_x g[x, t, k] and lam_k the basis eigenvalue (the paper's POLCA)
+             with G[t, k] = sum_x g[x, t, k] and lam_k the basis eigenvalue (the paper's POLCA;
+             its Table 8 also reports first order)
 
 3. Filters (Section 4.1): a basis vector is kept only if the mean trajectory decreases over
    training (mean_x L_k(x, T) < 0); within a kept vector, a token is kept only if its own
@@ -19,12 +20,12 @@
 
 Outputs in RUN_DIR/trajectories/:
   projections.npz   steps, grad_proj (tokens, T, K) float32, delta_proj (T, K), loss (tokens, T)
-  trajectories.npz  traj (tokens, T, K) float64, keep (tokens, K) bool, vector_kept (K,) bool,
-                    steps, place, carry, eigenvalues, basis_steps, order
+  trajectories_{order}.npz  traj (tokens, T, K) float64, keep (tokens, K) bool, vector_kept (K,)
+                    bool, steps, place, carry, eigenvalues, basis_steps, order (about 1 GB each)
   info.json
 
 Usage:
-  python trajectories.py RUN_DIR [--order second] [--interval 20] [--recompute]
+  python trajectories.py RUN_DIR [--orders first second] [--interval 20] [--recompute]
 """
 
 import argparse
@@ -106,7 +107,13 @@ def build(order, g, d, lam):
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("run_dir")
-    ap.add_argument("--order", choices=["first", "second"], default="second", help="paper's POLCA: second")
+    ap.add_argument(
+        "--orders",
+        nargs="+",
+        choices=["first", "second"],
+        default=["first", "second"],
+        help="trajectory types to build (paper's POLCA: second)",
+    )
     ap.add_argument("--interval", type=int, default=20, help="steps between POLCA checkpoints")
     ap.add_argument("--recompute", action="store_true", help="recompute projections.npz even if it exists")
     a = ap.parse_args()
@@ -139,47 +146,40 @@ def main():
         np.savez(proj_file, steps=steps, grad_proj=grad_proj, delta_proj=delta_proj, loss=loss)
 
     n_tokens, _, K = grad_proj.shape
-    traj = np.zeros((n_tokens, len(steps), K))
-    keep = np.zeros((n_tokens, K), dtype=bool)
-    vector_kept = np.zeros(K, dtype=bool)
-    for k in range(K):
-        traj[:, :, k] = build(a.order, grad_proj[:, :, k].astype(np.float64), delta_proj[:, k], float(eigenvalues[k]))
-        final = traj[:, -1, k]
-        vector_kept[k] = final.mean() < 0
-        keep[:, k] = vector_kept[k] & (final < 0)
-    print(
-        f"{a.order}-order trajectories: {vector_kept.sum()}/{K} vectors kept; tokens kept per kept vector "
-        f"{keep[:, vector_kept].sum(0).min() if vector_kept.any() else 0}-{keep.sum(0).max()}",
-        flush=True,
-    )
-
-    np.savez(
-        os.path.join(out, "trajectories.npz"),
-        traj=traj,
-        keep=keep,
-        vector_kept=vector_kept,
-        steps=steps,
-        place=place,
-        carry=carry,
-        eigenvalues=eigenvalues,
-        basis_steps=basis_steps,
-        order=a.order,
-    )
-    with open(os.path.join(out, "info.json"), "w") as f:
-        json.dump(
-            {
-                "args": vars(a),
-                "tokens": n_tokens,
-                "checkpoints": len(steps),
-                "vectors": K,
-                "vectors_kept": int(vector_kept.sum()),
-                "tokens_kept": keep.sum(0).tolist(),
-                "jvp_check_max_rel_err": jvp_err,
-            },
-            f,
-            indent=2,
+    info = {"args": vars(a), "tokens": n_tokens, "checkpoints": len(steps), "vectors": K,
+            "jvp_check_max_rel_err": jvp_err}  # fmt: skip
+    for order in a.orders:
+        traj = np.zeros((n_tokens, len(steps), K))
+        keep = np.zeros((n_tokens, K), dtype=bool)
+        vector_kept = np.zeros(K, dtype=bool)
+        for k in range(K):
+            traj[:, :, k] = build(order, grad_proj[:, :, k].astype(np.float64), delta_proj[:, k], float(eigenvalues[k]))
+            final = traj[:, -1, k]
+            vector_kept[k] = final.mean() < 0
+            keep[:, k] = vector_kept[k] & (final < 0)
+        print(
+            f"{order}-order trajectories: {vector_kept.sum()}/{K} vectors kept; tokens kept per kept vector "
+            f"{keep[:, vector_kept].sum(0).min() if vector_kept.any() else 0}-{keep.sum(0).max()}",
+            flush=True,
         )
-    print(f"done: {out}/trajectories.npz", flush=True)
+        path = os.path.join(out, f"trajectories_{order}.npz")
+        np.savez(
+            path,
+            traj=traj,
+            keep=keep,
+            vector_kept=vector_kept,
+            steps=steps,
+            place=place,
+            carry=carry,
+            eigenvalues=eigenvalues,
+            basis_steps=basis_steps,
+            order=order,
+        )
+        info[order] = {"vectors_kept": int(vector_kept.sum()), "tokens_kept": keep.sum(0).tolist()}
+        print(f"written {path}", flush=True)
+        del traj
+    with open(os.path.join(out, "info.json"), "w") as f:
+        json.dump(info, f, indent=2)
 
 
 if __name__ == "__main__":

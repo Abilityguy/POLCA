@@ -1,5 +1,6 @@
 #!/bin/bash
-# Run all five steps for one seed. Edit the settings below for your machine, then run:
+# Run all five steps for one seed, then make the paper's figures and Table 8.
+# Edit the settings below for your machine, then run:
 #   ./run_pipeline.sh
 # To submit it to a cluster scheduler, add your scheduler's header lines (resources, time limit)
 # at the top and submit this file.
@@ -22,3 +23,4 @@ python -u basis.py "$RUN"                     # 2. Hessian basis, paper Algorith
 python -u trajectories.py "$RUN"              # 3. POLCA trajectories and filters    (GPU)
 python -u cluster.py "$RUN" --jobs "$JOBS"    # 4. HDBSCAN clusters per basis vector (CPU)
 python -u stats.py "$RUN"                     # 5. homogeneity, recall, hidden breakthroughs
+python -u paper_figures.py "$RUN"             # paper Figures 3, 4 and 7, and Table 8
