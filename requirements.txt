@@ -1,0 +1,7 @@
+# Python 3.10. Versions used for the reported runs.
+# torch: install the build that matches your CUDA first (setup_env.sh does this); the pin below
+# then only checks the version.
+torch==2.14.1
+numpy==1.24.4
+scikit-learn==1.3.0   # >= 1.3 for sklearn.cluster.HDBSCAN
+joblib==1.3.1
